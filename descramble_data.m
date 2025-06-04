@@ -1,47 +1,46 @@
 function descrambled = descramble_data(scramble_key, scrambled_data)
-    % Takes data stream and descrambles using scramble_key
-    % Returns a struct with real_data and start positions
-    % Use descrambled.data and descrambled.start_locs
-
+    % DESCRAMBLE_DATA Descrambles 100Base-T1 Ethernet stream using LFSR
     % Inputs:
-    % scramble_key - Descrambler key to use for the stream.
-    % scrambled_data - Data from waveform.
+    %   scramble_key    - 33-bit initial key as vector
+    %   scrambled_data  - Binary vector of scrambled bits (0 or 1)
+    %
+    % Output:
+    %   descrambled.data        - Descrambled bitstream
+    %   descrambled.start_locs  - Detected frame start indices
 
+    real_data = zeros(1, length(scrambled_data));
     start_loc = [];
-    keysynced = 0;
+
     find_offset = 0;
-    real_data = [];
+    frame_in_progress = false;
+    frame_end_margin = 2048; % Estimated frame size in bits
+
     for i = 1:length(scrambled_data)
-        % Append result of the XOR operation to real_data
-        real_data = [real_data, bitxor(scrambled_data(i), scramble_key(1))];
+        % XOR descrambling
+        real_data(i) = bitxor(scrambled_data(i), scramble_key(1));
 
-        if real_data(i) ~= 1   
-            keysynced = keysynced + 1;  %if not 1, increment key counter
-        elseif keysynced > 10
-            scramble_key = get_new_key(scrambled_data, i);  %update key if too many zeros
-            keysynced = 0;  %reset key counter
-        else
-            keysynced = 0;  %don't update key counter if ones are found
-        end
+        % Update scrambler key using LFSR
+        scramble_key = lfsr_key(scramble_key);
 
-        if mod(i, 128) == 0 && i > 0    %check if i is multiple of 0x80 and greater than zero
-            sval = search_start(real_data, find_offset);    
-            %search_start returns index of start frame by checking for idle
-            %plus JK. result appended to start locs. Not useful to
-            %preallocate since much smaller than real_data
-            if sval >= 0
-                start_loc = [start_loc, sval + find_offset];
-                find_offset = find_offset + sval + 24;
-            else
-                find_offset = find_offset + 128;
+        % Only search when not inside a frame
+        if ~frame_in_progress && i >= 33
+            % Check the last 33 bits for a preamble
+            preamble_candidate = real_data(i-32:i);
+            if is_preamble(preamble_candidate)
+                % Found frame start
+                frame_start = i - 32;
+                start_loc = [start_loc, frame_start];
+                frame_in_progress = true;
+                find_offset = i; % Resume searching after this frame
             end
         end
 
-        % check that key is still a double
-        scramble_key = double(scramble_key);
-        scramble_key = lfsr_key(scramble_key);
+        % End of frame region — allow search again
+        if frame_in_progress && i >= find_offset + frame_end_margin
+            frame_in_progress = false;
+        end
     end
 
-    descrambled.data = real_data;   %assign data to struct
+    descrambled.data = real_data;
     descrambled.start_locs = start_loc;
 end
